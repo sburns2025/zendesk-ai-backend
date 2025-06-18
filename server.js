@@ -1,47 +1,53 @@
-const express = require('express');
-const cors = require('cors');
-const fetch = require('node-fetch');
-require('dotenv').config();
+import OpenAI from 'openai';
 
-const app = express();
-app.use(cors());
-app.use(express.json());
-
-app.post('/openai', async (req, res) => {
-  const { action, input } = req.body;
-  let prompt;
-
-  if (action === 'help') {
-    prompt = `Generate a helpful support agent response to this ticket: ${input}`;
-  } else if (action === 'summarize') {
-    prompt = `Summarize this Zendesk ticket conversation: ${input}`;
-  } else if (action === 'adjust') {
-    const friendly = await callOpenAI(`Rewrite more friendly: ${input}`);
-    const professional = await callOpenAI(`Rewrite more professionally: ${input}`);
-    const concise = await callOpenAI(`Make more concise: ${input}`);
-    return res.json({ friendly, professional, concise });
-  }
-
-  const output = await callOpenAI(prompt);
-  res.json({ output });
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
 });
 
-async function callOpenAI(prompt) {
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: 'gpt-4',
-      messages: [{ role: 'user', content: prompt }]
-    })
-  });
+export default async function handler(req, res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  const data = await res.json();
-  return data.choices[0].message.content;
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+  const { action, input } = req.body;
+  if (!input || !action) return res.status(400).json({ error: 'Missing input or action' });
+
+  try {
+    if (action === 'adjust') {
+      const [friendly, professional, concise] = await Promise.all([
+        getGPT(`Make this message more friendly:\n\n${input}`),
+        getGPT(`Make this message more professional:\n\n${input}`),
+        getGPT(`Make this message more concise:\n\n${input}`)
+      ]);
+      return res.status(200).json({ friendly, professional, concise });
+    }
+
+    if (action === 'summarize') {
+      const output = await getGPT(`Summarize this ticket in one sentence:\n\n${input}`);
+      return res.status(200).json({ output });
+    }
+
+    if (action === 'help') {
+      const output = await getGPT(`Suggest a helpful response to this customer message:\n\n${input}`);
+      return res.status(200).json({ output });
+    }
+
+    return res.status(400).json({ error: 'Invalid action type' });
+
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'OpenAI API error' });
+  }
 }
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+async function getGPT(prompt) {
+  const chat = await openai.chat.completions.create({
+    model: 'gpt-4',
+    messages: [{ role: 'user', content: prompt }],
+    max_tokens: 300
+  });
+  return chat.choices[0].message.content.trim();
+}
